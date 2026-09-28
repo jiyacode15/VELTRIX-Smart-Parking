@@ -1,0 +1,38 @@
+{
+  "model_type": "RandomForestRegressor",
+  "algorithm": "Random Forest Ensemble (100 estimators, max_depth=12)",
+  "features_used": [
+    "facility_id",
+    "hour_of_day",
+    "day_of_week",
+    "is_weekend",
+    "total_capacity",
+    "current_occupancy_ratio",
+    "recent_avg_ratio",
+    "booking_activity",
+    "horizon_minutes"
+  ],
+  "feature_importances": {
+    "facility_id": 0.0001,
+    "hour_of_day": 0.003,
+    "day_of_week": 0.0,
+    "is_weekend": 0.0,
+    "total_capacity": 0.0001,
+    "current_occupancy_ratio": 0.9864,
+    "recent_avg_ratio": 0.0037,
+    "booking_activity": 0.0,
+    "horizon_minutes": 0.0066
+  },
+  "metrics": {
+    "mae": 0.0082,
+    "mae_percentage": 0.82,
+    "rmse": 0.0107,
+    "rmse_percentage": 1.07,
+    "r2": 0.9985
+  },
+  "training_dataset_size": 77285,
+  "test_dataset_size": 15457,
+  "trained_at": "2026-09-27T18:03:10.132374",
+  "status": "trained_active",
+  "note": "Trained on persistent municipal occupancy logs with temporal diurnal features and multi-horizon targets."
+}
