@@ -1,5 +1,6 @@
-// Configure VITE_API_URL in deployment. Local development keeps the existing API default.
-export const API_BASE = (import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8000' : '')).replace(/\/$/, '');
+// Production always uses same-origin /api routes through Vercel Services.
+// VITE_API_URL is only an optional local-development override.
+export const API_BASE = (import.meta.env.DEV ? (import.meta.env.VITE_API_URL || 'http://localhost:8000') : '').replace(/\/$/, '');
 
 const USER_KEY = 'veltrix_user';
 const TOKEN_KEY = 'veltrix_token';

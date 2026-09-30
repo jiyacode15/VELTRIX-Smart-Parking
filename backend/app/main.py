@@ -5,7 +5,9 @@ import math
 import os
 import re
 from pathlib import Path
+import tempfile
 import csv
+import shutil
 from secrets import token_hex
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -59,12 +61,22 @@ class Base(DeclarativeBase):
 
 ROOT = Path(__file__).resolve().parent.parent
 
+DATABASE_URL = os.getenv("DATABASE_URL")
+if DATABASE_URL:
+    database_url = DATABASE_URL
+elif os.getenv("VERCEL") == "1":
+    # Vercel functions can write only to /tmp. Seed it from the packaged demo DB
+    # on a cold start; this file is ephemeral and not durable across instances.
+    runtime_db = Path(tempfile.gettempdir()) / "veltrix.db"
+    if not runtime_db.exists() and (ROOT / "veltrix.db").exists():
+        shutil.copy2(ROOT / "veltrix.db", runtime_db)
+    database_url = f"sqlite:///{runtime_db}"
+else:
+    database_url = f"sqlite:///{ROOT / 'veltrix.db'}"
 
 engine = create_engine(
-    f"sqlite:///{ROOT / 'veltrix.db'}",
-    connect_args={
-        "check_same_thread": False
-    },
+    database_url,
+    connect_args={"check_same_thread": False} if database_url.startswith("sqlite:") else {},
 )
 
 
