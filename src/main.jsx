@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import L from 'leaflet';
-import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
+import { MapContainer, Marker, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet';
 import hero from './assets/veltrix-parking-hero.png';
 import {
+  API_BASE,
   authService,
   parkingService,
   bookingService,
@@ -124,7 +125,7 @@ const parkingIcon = L.divIcon({
 function App() {
   const [path, setPath] = useState(window.location.pathname || '/');
   const [user, setUser] = useState(authService.currentUser());
-  const [language, setLanguage] = useState('en');
+  const [language, setLanguage] = useState(() => localStorage.getItem('veltrix_language') || 'en');
   const [areas, setAreas] = useState([]);
   const [loadingAreas, setLoadingAreas] = useState(true);
   const [overview, setOverview] = useState(null);
@@ -136,13 +137,18 @@ function App() {
   const refreshAreas = async () => {
     try {
       setLoadingAreas(true);
-      const data = await parkingService.getAreas();
-      const normalized = Array.isArray(data)
-        ? data.map(normalizeParkingArea)
+      const raw = await parkingService.getAreas();
+      const payload = Array.isArray(raw)
+        ? raw
+        : Array.isArray(raw?.data)
+        ? raw.data
         : [];
+
+      const normalized = payload.map(normalizeParkingArea);
       setAreas(normalized);
     } catch (error) {
-      console.error('Error fetching parking areas:', error);
+      console.error('Error fetching parking areas from backend:', error);
+      setAreas([]);
     } finally {
       setLoadingAreas(false);
     }
@@ -156,6 +162,10 @@ function App() {
       console.error('Error fetching overview:', error);
     }
   };
+
+  useEffect(() => {
+    localStorage.setItem('veltrix_language', language);
+  }, [language]);
 
   useEffect(() => {
     refreshAreas();
@@ -231,6 +241,8 @@ function App() {
     pageContent = <Home {...c} />;
   } else if (path === '/parking' || path === '/nearby') {
     pageContent = <FindParking {...c} />;
+  } else if (path.startsWith('/delivery')) {
+    pageContent = <DeliveryParking {...c} />;
   } else if (path.startsWith('/parking/')) {
     const id = path.split('/')[2];
     pageContent = <Detail {...c} id={id} />;
@@ -292,16 +304,16 @@ function Header({ go, user, logout, currentPath, language = 'en', setLanguage })
         <span>VELTRIX Smart Mobility Platform · Real-time Urban Parking</span>
         <span>
           <button type="button" onClick={() => navigate('/how-it-works')}>
-            Architecture
+            {getTranslation(language, 'architecture', 'Architecture')}
           </button>
           <button type="button" onClick={() => navigate('/contact')}>
-            Support
+            {getTranslation(language, 'support', 'Support')}
           </button>
           <select
             className="lang-select"
             value={language}
             onChange={(e) => setLanguage && setLanguage(e.target.value)}
-            aria-label="Select language"
+            aria-label={getTranslation(language, 'selectLanguage', 'Select language')}
           >
             {supportedLanguages.map((lang) => (
               <option key={lang.code} value={lang.code}>
@@ -368,6 +380,10 @@ function Header({ go, user, logout, currentPath, language = 'en', setLanguage })
             {getTranslation(language, 'navDashboard', 'Dashboard')}
           </button>
 
+          <button className={currentPath.startsWith('/delivery') ? 'active-nav' : ''} onClick={() => navigate('/delivery')}>
+            {getTranslation(language, 'navDelivery', 'Delivery Parking')}
+          </button>
+
           <button
             className={
               currentPath === '/intelligence' || currentPath === '/forecasting'
@@ -390,7 +406,7 @@ function Header({ go, user, logout, currentPath, language = 'en', setLanguage })
         {user ? (
           <div className="account">
             <button onClick={() => navigate('/bookings')}>
-              My Bookings
+              {getTranslation(language, 'navBookings', 'My Bookings')}
             </button>
 
             {user.role === 'admin' && (
@@ -407,7 +423,7 @@ function Header({ go, user, logout, currentPath, language = 'en', setLanguage })
               <span className="role-tag">{user.role}</span>
             </button>
 
-            <button onClick={logout}>Sign out</button>
+            <button onClick={logout}>{getTranslation(language, 'signOut', 'Sign out')}</button>
           </div>
         ) : (
           <button
@@ -758,7 +774,37 @@ function MapCenterController({ location, results }) {
   return null;
 }
 
-function FindParking({ areas, go, loadingAreas, lastUpdated }) {
+function DeliveryMapCenter({ point }) {
+  const map = useMap();
+  useEffect(() => { if (point) map.setView([point.lat, point.lon], 14, { animate: true }); }, [map, point]);
+  return null;
+}
+
+function DeliveryMapPicker({ onPick }) {
+  useMapEvents({ click(event) { onPick({ lat: event.latlng.lat, lon: event.latlng.lng, label: 'Selected map location', type: 'map' }); } });
+  return null;
+}
+
+function ParkingMapPicker({ enabled, onPick }) {
+  useMapEvents({ click(event) { if (enabled) onPick({ lat: event.latlng.lat, lon: event.latlng.lng, type: 'map', label: 'Selected map location' }); } });
+  return null;
+}
+
+function getDeliveryParkingIcon(hub) {
+  const status = hub.available <= 0 ? 'full' : hub.limited || hub.available / hub.total <= 0.25 ? 'limited' : 'available';
+  const label = status === 'full' ? 'FULL' : status === 'limited' ? 'LIMITED' : 'OPEN';
+  return L.divIcon({ className: `delivery-parking-marker ${status}`, html: `<span>${label}</span>`, iconSize: [68, 30], iconAnchor: [34, 15] });
+}
+
+function straightDistanceKm(from, to) {
+  if (!from) return null;
+  const rad = (v) => (v * Math.PI) / 180;
+  const dLat = rad(to.lat - from.lat), dLon = rad(to.lon - from.lon);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(rad(from.lat)) * Math.cos(rad(to.lat)) * Math.sin(dLon / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function FindParking({ areas, go, loadingAreas, lastUpdated, language = 'en' }) {
   const [mode, setMode] = useState('all'); // 'all', 'gps', 'destination'
   const [destination, setDestination] = useState('');
   const [message, setMessage] = useState(
@@ -774,8 +820,38 @@ function FindParking({ areas, go, loadingAreas, lastUpdated }) {
   const [nearbyLoading, setNearbyLoading] = useState(false);
   const [radiusKm, setRadiusKm] = useState(5);
   const [sortBy, setSortBy] = useState('distance'); // 'distance', 'available', 'occupancy'
+  const [mapSelectMode, setMapSelectMode] = useState(false);
 
   const searchDebounce = useRef(null);
+  const searchInputRef = useRef(null);
+
+  const searchDestination = async () => {
+    const query = destination.trim();
+    if (!query) return;
+    setLocation(null);
+    setSelectedPlace(null);
+    setResults([]);
+    setSearching(true);
+    setMessage(`Searching for “${query}”…`);
+    try {
+      const places = await parkingService.geocode(query);
+      const matches = Array.isArray(places) ? places : [];
+      setPlaceResults(matches);
+      if (matches.length) {
+        setMessage(`Found ${matches.length} matching locations. Select a destination.`);
+        selectPlace(matches[0]);
+      } else {
+        setResults([]);
+        setMessage('No matching destination found. Try another place name.');
+      }
+    } catch (error) {
+      setPlaceResults([]);
+      setResults([]);
+      setMessage(error?.message || 'Destination search is unavailable. Check your connection and try again.');
+    } finally {
+      setSearching(false);
+    }
+  };
 
   // Initialize with all areas
   useEffect(() => {
@@ -905,7 +981,7 @@ function FindParking({ areas, go, loadingAreas, lastUpdated }) {
       },
       (err) => {
         console.error('GPS error:', err);
-        setMessage('Location permission was denied or is unavailable. Please search by place name.');
+        setMessage(err.code === 1 ? 'Location permission denied. Allow location access or search by place name.' : err.code === 3 ? 'Location request timed out. Please try again or search by place name.' : 'Your location is unavailable. Please search by place name.');
       },
       { enableHighAccuracy: true, timeout: 8000 }
     );
@@ -970,9 +1046,8 @@ function FindParking({ areas, go, loadingAreas, lastUpdated }) {
           type="button"
           className={mode === 'gps' ? 'primary' : 'secondary'}
           onClick={useGPS}
-          disabled={loadingAreas}
         >
-          📍 Use My Location
+          {getTranslation(language, 'useMyLocation', 'Use My Location')}
         </button>
 
         <button
@@ -980,13 +1055,15 @@ function FindParking({ areas, go, loadingAreas, lastUpdated }) {
           className={mode === 'destination' ? 'primary' : 'secondary'}
           onClick={() => {
             setMode('destination');
-            setLocation(null);
-            setSelectedPlace(null);
-            setPlaceResults([]);
             setMessage('Enter a destination, landmark, station, or street name.');
+            requestAnimationFrame(() => searchInputRef.current?.focus());
           }}
         >
-          🔎 Search Destination
+          {getTranslation(language, 'searchDestination', '🔎 Search Destination')}{mode === 'destination' ? ' ✓' : ''}
+        </button>
+
+        <button type="button" className={mapSelectMode ? 'primary' : 'secondary'} onClick={() => { setMapSelectMode(!mapSelectMode); setMode('destination'); setMessage(mapSelectMode ? 'Map selection turned off.' : 'Tap the map to search near that point.'); }}>
+          {getTranslation(language, 'selectOnMap', '🗺️ Select on Map')}{mapSelectMode ? ' ✓' : ''}
         </button>
 
         <button
@@ -994,6 +1071,7 @@ function FindParking({ areas, go, loadingAreas, lastUpdated }) {
           className={mode === 'all' ? 'primary' : 'secondary'}
           onClick={() => {
             setMode('all');
+            setMapSelectMode(false);
             setLocation(null);
             setSelectedPlace(null);
             setPlaceResults([]);
@@ -1001,36 +1079,36 @@ function FindParking({ areas, go, loadingAreas, lastUpdated }) {
             setMessage(`Browsing all ${areas.length} parking facilities across Mumbai.`);
           }}
         >
-          🏙️ Browse All ({areas.length})
+          {getTranslation(language, 'browseAll', '🏙️ Browse All')} ({areas.length})
         </button>
       </div>
 
       {/* Destination search input */}
-      {mode === 'destination' && (
-        <div style={{ position: 'relative', maxWidth: '750px' }}>
+        <div className="destination-search-shell">
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              if (placeResults.length > 0) selectPlace(placeResults[0]);
+              if (destination.trim().length >= 2) searchDestination();
             }}
             className="destination-search"
           >
+            <span className="destination-search-icon" aria-hidden="true">⌕</span>
             <input
+              ref={searchInputRef}
               type="text"
-              placeholder="Search place, e.g. Bandra, BKC, Dadar, Andheri, Nirmal..."
+              placeholder={getTranslation(language, 'searchPlaceholder', 'Search destination, area, landmark or address…')}
               value={destination}
               onChange={(e) => {
                 setDestination(e.target.value);
                 setSelectedPlace(null);
               }}
-              autoFocus
             />
             <button
               className="primary"
               type="submit"
               disabled={searching || !destination.trim()}
             >
-              {searching ? 'Searching...' : 'Search'}
+              {searching ? getTranslation(language, 'searching', 'Searching…') : getTranslation(language, 'search', 'Search')}
             </button>
           </form>
 
@@ -1058,8 +1136,9 @@ function FindParking({ areas, go, loadingAreas, lastUpdated }) {
               </div>
             </div>
           )}
+          {searching && <p className="search-feedback" role="status">Searching destinations…</p>}
+          {!searching && destination.trim().length >= 2 && placeResults.length === 0 && message.toLowerCase().includes('no matching') && <p className="search-feedback" role="status">No matching destinations. Try a nearby landmark or area name.</p>}
         </div>
-      )}
 
       {/* Selected location indicator */}
       {location && (
@@ -1069,6 +1148,7 @@ function FindParking({ areas, go, loadingAreas, lastUpdated }) {
             {location.lat.toFixed(4)}, {location.lon.toFixed(4)}
           </span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
+            {location.type === 'gps' && <button type="button" className="secondary" onClick={() => setLocation({ ...location })}>Re-center on Me</button>}
             <small>Radius:</small>
             <select
               value={radiusKm}
@@ -1146,6 +1226,7 @@ function FindParking({ areas, go, loadingAreas, lastUpdated }) {
 
       {/* Interactive Map */}
       <div className="nearby-map">
+        {mapSelectMode && <p className="map-pick-hint" role="status">Tap or click the map to choose a search location.</p>}
         <MapContainer
           center={location ? [location.lat, location.lon] : [19.076, 72.8777]}
           zoom={location ? 14 : 11}
@@ -1157,6 +1238,7 @@ function FindParking({ areas, go, loadingAreas, lastUpdated }) {
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
           <MapCenterController location={location} results={sortedResults} />
+          <ParkingMapPicker enabled={mapSelectMode} onPick={async (picked) => { setLocation(picked); setSelectedPlace(null); setResults(await loadNearby(picked.lat, picked.lon, radiusKm)); setMessage('Parking near selected location.'); setMapSelectMode(false); }} />
 
           {location && (
             <Marker
@@ -1245,7 +1327,7 @@ function FindParking({ areas, go, loadingAreas, lastUpdated }) {
       ) : sortedResults.length === 0 ? (
         <div style={{ padding: '56px 20px', textAlign: 'center', background: 'white', borderRadius: 'var(--r-lg)', border: '1px solid var(--line)', boxShadow: 'var(--shadow-sm)' }}>
           <div style={{ fontSize: '48px', marginBottom: '16px' }}>🅿️</div>
-          <h3 style={{ color: 'var(--navy)', marginBottom: '8px' }}>No parking facilities found</h3>
+          <h3 style={{ color: 'var(--navy)', marginBottom: '8px' }}>{getTranslation(language, 'noFacilities', 'No parking facilities found near this destination.')}</h3>
           <p style={{ color: 'var(--muted)', fontSize: '14px', marginBottom: '24px' }}>
             Try expanding the search radius or exploring another Mumbai location.
           </p>
@@ -3012,6 +3094,102 @@ function Profile({ user, go, logout }) {
 // AUTH (Login, Signup, Admin Login)
 // =========================================================
 
+function DeliveryParking({ go, language = 'en' }) {
+  const [driver, setDriver] = useState(() => { try { return JSON.parse(localStorage.getItem('veltrix_delivery_driver') || 'null'); } catch { return null; } });
+  const [reservation, setReservation] = useState(() => { try { return JSON.parse(localStorage.getItem('veltrix_delivery_reservation') || 'null'); } catch { return null; } });
+  const [form, setForm] = useState({ name: '', mobile: '', platform: 'Zomato', vehicle: 'Bike', registration: '' });
+  const [now, setNow] = useState(Date.now());
+  const [point, setPoint] = useState(null);
+  const [query, setQuery] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [notice, setNotice] = useState(getTranslation(language, 'searchLocationHint', 'Choose a location option to find nearby designated delivery parking.'));
+  const [selected, setSelected] = useState(null);
+  const [sort, setSort] = useState('nearest');
+  const [filters, setFilters] = useState({ available: false, nearby: false, delivery: true, bike: false, ev: false, limited: false });
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
+  const hubs = [
+    { id: 'delivery-andheri', name: 'Andheri Delivery Hub', area: 'Andheri West, Mumbai', lat: 19.1197, lon: 72.8464, available: 12, total: 20, stay: 30, hours: '07:00–23:00', vehicles: ['Bike', 'Scooter', 'EV'], limited: false },
+    { id: 'delivery-bandra', name: 'Bandra Delivery Zone', area: 'Bandra West, Mumbai', lat: 19.0596, lon: 72.8295, available: 6, total: 14, stay: 30, hours: '08:00–22:00', vehicles: ['Bike', 'Scooter'], limited: true },
+    { id: 'delivery-borivali', name: 'Borivali Market Parking', area: 'Borivali West, Mumbai', lat: 19.2307, lon: 72.8567, available: 8, total: 16, stay: 45, hours: '06:00–22:00', vehicles: ['Bike', 'Scooter', 'EV'], limited: false },
+  ];
+  const nearbyHubs = hubs.map(h => ({ ...h, distance: straightDistanceKm(point, { lat: h.lat, lon: h.lon }) })).sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
+  const visibleHubs = nearbyHubs.filter(h => (!filters.available || h.available > 0) && (!filters.nearby || (h.distance !== null && h.distance <= 5)) && (!filters.bike || h.vehicles.includes('Bike')) && (!filters.ev || h.vehicles.includes('EV')) && (!filters.limited || h.stay <= 30));
+  if (sort === 'available') visibleHubs.sort((a, b) => b.available - a.available);
+  const useDriverLocation = () => {
+    if (!navigator.geolocation) { setNotice('Your browser does not support location detection. Search a destination or tap the map.'); return; }
+    setNotice('Location is used only to find nearby designated delivery parking. Waiting for your permission…');
+    navigator.geolocation.getCurrentPosition(pos => {
+      const p = { lat: pos.coords.latitude, lon: pos.coords.longitude, label: getTranslation(language, 'currentLocation', 'Your current location'), type: 'gps' };
+      setPoint(p); setNotice(`${getTranslation(language, 'nearbyDeliveryParking', 'Nearby Delivery Parking')} · ${getTranslation(language, 'currentLocation', 'Your current location')}`);
+    }, error => {
+      const messages = { 1: 'Location access is required to find nearby delivery parking. You can allow access or choose a location on the map.', 2: 'Your location is unavailable right now. Search a destination or select a point on the map.', 3: 'Location request timed out. Try again or select a point on the map.' };
+      setNotice(messages[error.code] || 'Could not detect your location. Search a destination or tap the map.');
+    }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 });
+  };
+  const searchDestination = async (e) => {
+    e.preventDefault(); if (!query.trim()) return;
+    setSearching(true); setNotice(`Searching for “${query.trim()}”…`);
+    try {
+      const matches = await parkingService.geocode(query.trim());
+      const place = Array.isArray(matches) ? matches[0] : null;
+      if (!place || !Number.isFinite(Number(place.latitude)) || !Number.isFinite(Number(place.longitude))) { setNotice('No matching destination found. Try another street, landmark, or area.'); return; }
+      const p = { lat: Number(place.latitude), lon: Number(place.longitude), label: place.name || query.trim(), type: 'destination' };
+      setPoint(p); setSelected(null); setNotice(`Parking near ${p.label} · distances are straight-line estimates.`);
+    } catch (error) { setNotice(error?.message || 'Destination search is unavailable. Check your connection and try again.'); }
+    finally { setSearching(false); }
+  };
+  const reserve = (hub) => {
+    const start = Date.now();
+    const item = { id: `VELTRIX-DRV-${Math.floor(1000 + Math.random() * 9000)}`, hub: hub.name, slot: `B-${String(Math.floor(1 + Math.random() * 20)).padStart(2, '0')}`, start, expiry: start + hub.stay * 60000, status: 'ACTIVE' };
+    setReservation(item); localStorage.setItem('veltrix_delivery_reservation', JSON.stringify(item));
+  };
+  const finish = () => {
+    const history = JSON.parse(localStorage.getItem('veltrix_delivery_history') || '[]');
+    localStorage.setItem('veltrix_delivery_history', JSON.stringify([{ ...reservation, status: 'COMPLETED', ended: Date.now() }, ...history].slice(0, 20)));
+    localStorage.removeItem('veltrix_delivery_reservation'); setReservation(null);
+  };
+  const remaining = reservation ? Math.max(0, Math.ceil((reservation.expiry - now) / 1000)) : 0;
+  return <Page kicker="DESIGNATED / AUTHORIZED DELIVERY PARKING" title={driver ? `Welcome, ${driver.name.split(' ')[0]}.` : 'Parking for your next stop.'} intro="Find designated parking areas and check their posted time and vehicle rules. Parking permission depends on the facility’s rules; VELTRIX does not guarantee protection from enforcement or towing.">
+    {!driver ? <form className="driver-form" onSubmit={(e) => { e.preventDefault(); const d = { ...form, mobile: form.mobile.trim(), registration: form.registration.trim().toUpperCase() }; if (!d.name.trim() || !/^\d{10}$/.test(d.mobile) || !d.registration) return; setDriver(d); localStorage.setItem('veltrix_delivery_driver', JSON.stringify(d)); }}>
+      <h2>VELTRIX Delivery Parking</h2><p>Demo driver profile · no password or account credentials are collected.</p>
+      <label>Name<input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>
+      <label>Mobile number<input required inputMode="numeric" pattern="[0-9]{10}" maxLength="10" value={form.mobile} onChange={e => setForm({ ...form, mobile: e.target.value.replace(/\D/g, '') })} /></label>
+      <label>Delivery platform<select value={form.platform} onChange={e => setForm({ ...form, platform: e.target.value })}>{['Zomato','Swiggy','Zepto','Blinkit','Flipkart','Rapido','Other'].map(x => <option key={x}>{x}</option>)}</select></label>
+      <label>Vehicle type<select value={form.vehicle} onChange={e => setForm({ ...form, vehicle: e.target.value })}>{['Bike','Scooter','EV','Other'].map(x => <option key={x}>{x}</option>)}</select></label>
+      <label>Vehicle registration<input required value={form.registration} onChange={e => setForm({ ...form, registration: e.target.value })} placeholder="MH 02 AB 1234" /></label>
+      <button className="primary" type="submit">Continue to driver dashboard</button>
+    </form> : <>
+      <div className="driver-actions">
+        <button className="primary" onClick={() => document.getElementById('delivery-results')?.scrollIntoView({ behavior: 'smooth' })}>Find Delivery Parking</button>
+        <button className="secondary" onClick={() => { setDriver(null); localStorage.removeItem('veltrix_delivery_driver'); }}>Sign out</button>
+        <button className="secondary" onClick={() => go('/bookings')}>General parking bookings</button>
+      </div>
+      {reservation && <section className="driver-session"><p className="eyebrow">{remaining ? 'PARKING SESSION ACTIVE' : 'PARKING SESSION EXPIRED'}</p><h2>{reservation.hub} · Slot {reservation.slot}</h2><p>Reservation {reservation.id} · Expires {new Date(reservation.expiry).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p><strong className="session-clock">{remaining ? `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, '0')} remaining` : 'Time limit reached'}</strong><button className="secondary" onClick={finish}>End Parking Session</button></section>}
+      <h2 id="delivery-results">{getTranslation(language, 'findDeliveryParking', 'Find Authorized Delivery Parking')}</h2><p className="delivery-note">Demo zone listings for presentation. Confirm current signs, access, and availability at the location before parking.</p>
+      <div className="delivery-location-options">
+        <button className="primary" onClick={useDriverLocation}>{getTranslation(language, 'useCurrentLocation', '📍 Use My Current Location')}</button>
+        <form className="delivery-search" onSubmit={searchDestination}><input aria-label={getTranslation(language, 'searchDestination', 'Search Destination')} placeholder={getTranslation(language, 'searchPlaceholder', 'Search restaurant, market, street, or landmark')} value={query} onChange={e => setQuery(e.target.value)} /><button className="primary" type="submit" disabled={searching || !query.trim()}>{searching ? getTranslation(language, 'searching', 'Searching…') : getTranslation(language, 'searchDestination', 'Search Destination')}</button></form>
+        <button className="secondary" onClick={() => { setNotice('Tap anywhere on the map to search for parking near that point.'); document.getElementById('delivery-map')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}>{getTranslation(language, 'selectOnMap', '🗺️ Select on Map')}</button>
+      </div>
+      <p className="delivery-notice" role="status">{notice}</p>
+      <div className="delivery-map-toolbar">
+        {Object.entries({ available: getTranslation(language, 'available', 'Available'), nearby: getTranslation(language, 'nearbyFilter', 'Nearby ≤ 5 km'), delivery: getTranslation(language, 'deliveryOnly', 'Delivery Only'), bike: getTranslation(language, 'bike', 'Bike'), ev: getTranslation(language, 'ev', 'EV'), limited: getTranslation(language, 'limitedTime', 'Limited Time') }).map(([key, label]) => <button key={key} type="button" className={filters[key] ? 'filter-chip selected' : 'filter-chip'} aria-pressed={filters[key]} onClick={() => setFilters({ ...filters, [key]: !filters[key] })}>{label}</button>)}
+        <label>{getTranslation(language, 'sort', 'Sort')} <select value={sort} onChange={e => setSort(e.target.value)}><option value="nearest">{getTranslation(language, 'closest', 'Closest')}</option><option value="available">{getTranslation(language, 'mostAvailable', 'Most available')}</option></select></label>
+      </div>
+      <div className="delivery-map-wrap" id="delivery-map"><MapContainer center={point ? [point.lat, point.lon] : [19.076, 72.8777]} zoom={11} scrollWheelZoom className="delivery-map">
+        <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+        <DeliveryMapCenter point={point} /><DeliveryMapPicker onPick={p => { setPoint(p); setSelected(null); setNotice('Parking near selected location · distances are straight-line estimates.'); }} />
+        {point && <Marker position={[point.lat, point.lon]} icon={userLocationIcon}><Popup><b>{point.label}</b></Popup></Marker>}
+        {visibleHubs.map(hub => <Marker key={hub.id} position={[hub.lat, hub.lon]} icon={getDeliveryParkingIcon(hub)} eventHandlers={{ click: () => setSelected(hub) }}><Popup><b>{hub.name}</b><br />{hub.distance === null ? 'Set a location to see distance' : `${hub.distance.toFixed(1)} km straight-line`}<br />{hub.available} / {hub.total} slots available</Popup></Marker>)}
+      </MapContainer></div>
+      {point?.type === 'gps' && <button className="secondary recenter-button" onClick={() => document.getElementById('delivery-map')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>📍 Re-center on Me</button>}
+      {selected && <section className="delivery-selected"><span className="badge badge-success">{selected.available ? (selected.limited ? 'LIMITED' : 'AVAILABLE') : 'FULL'}</span><h3>{selected.name}</h3><p>{selected.area} · {selected.distance === null ? 'Choose a location to calculate distance' : `${selected.distance.toFixed(2)} km straight-line from selected location`}</p><p>{selected.available} / {selected.total} slots · Maximum stay {selected.stay} min · {selected.vehicles.join(', ')}</p><p>Hours: {selected.hours} · Designated delivery parking</p><div className="driver-actions"><button className="secondary" onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${selected.lat},${selected.lon}`, '_blank', 'noopener,noreferrer')}>Get Directions</button><button className="secondary" onClick={() => go(`/parking/${selected.id}`)}>View Details</button><button className="primary" disabled={Boolean(reservation) || selected.available <= 0} onClick={() => reserve(selected)}>Reserve Slot</button></div></section>}
+      <h3>{getTranslation(language, 'nearbyDeliveryParking', 'Nearby Delivery Parking')} {point ? `· ${visibleHubs.length} found` : ''}</h3><div className="cards">{visibleHubs.map(hub => <article className="delivery-card" key={hub.name}><span className={`badge ${hub.available ? (hub.limited ? 'badge-warning' : 'badge-success') : 'badge-danger'}`}>{hub.available ? (hub.limited ? getTranslation(language, 'limited', 'LIMITED') : getTranslation(language, 'available', 'AVAILABLE')) : getTranslation(language, 'full', 'FULL')}</span><h3>{hub.name}</h3><p>{hub.area} · {hub.distance === null ? 'Distance available after selecting a location' : `${hub.distance.toFixed(1)} km straight-line`}</p><b>{hub.available} / {hub.total} {getTranslation(language, 'slotsAvailable', 'slots available')}</b><p>{getTranslation(language, 'maxStay', 'Maximum stay')}: {hub.stay} min · {driver.vehicle} · {hub.hours}</p><p>Follow posted facility rules and time limits.</p><div className="driver-actions"><button className="secondary" onClick={() => setSelected(hub)}>{getTranslation(language, 'viewDetails', 'View Details')}</button><button className="secondary" onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${hub.lat},${hub.lon}`, '_blank', 'noopener,noreferrer')}>{getTranslation(language, 'getDirections', 'Get Directions')}</button><button className="primary" disabled={Boolean(reservation)} onClick={() => reserve(hub)}>{getTranslation(language, 'reserveSlot', 'Reserve Slot')}</button></div></article>)}</div>
+      <h2>{getTranslation(language, 'parkingHistory', 'Parking history')}</h2><div className="driver-history">{JSON.parse(localStorage.getItem('veltrix_delivery_history') || '[]').map((item, i) => <p key={item.id + i}>{new Date(item.start).toLocaleString()} · {item.hub} · Slot {item.slot} · {item.status}</p>)}{!JSON.parse(localStorage.getItem('veltrix_delivery_history') || '[]').length && <p>Your completed parking sessions will appear here.</p>}</div>
+    </>}
+  </Page>;
+}
+
 function Auth({ signup, admin, go, done }) {
   const [f, setF] = useState({
     name: '',
@@ -3237,7 +3415,7 @@ function AIAssistant({ areas = [], language = 'en', routeSummary, recommendation
 
     // Call backend assistant endpoint
     try {
-      const resp = await fetch('http://localhost:8001/api/assistant/query', {
+      const resp = await fetch(`${API_BASE}/api/assistant/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, context: { facility_id: null } })
@@ -3248,12 +3426,13 @@ function AIAssistant({ areas = [], language = 'en', routeSummary, recommendation
         setMessages(prev => [...prev, { role: 'assistant', text: responseText, data: data.data, action: data.action }]);
         speak(responseText);
       } else {
-        // Fallback to local processing
+        console.error('AI assistant request failed:', resp.status, resp.statusText);
         const fallbackResponse = processQueryLocally(query);
         setMessages(prev => [...prev, { role: 'assistant', text: fallbackResponse }]);
         speak(fallbackResponse);
       }
     } catch (err) {
+      console.error('AI assistant API request failed:', err);
       const fallbackResponse = processQueryLocally(query);
       setMessages(prev => [...prev, { role: 'assistant', text: fallbackResponse }]);
       speak(fallbackResponse);

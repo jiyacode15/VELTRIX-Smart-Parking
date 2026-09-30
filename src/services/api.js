@@ -1,4 +1,5 @@
-export const API_BASE = 'http://localhost:8001';
+// Configure VITE_API_URL in deployment. Local development keeps the existing API default.
+export const API_BASE = (import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8000' : '')).replace(/\/$/, '');
 
 const USER_KEY = 'veltrix_user';
 const TOKEN_KEY = 'veltrix_token';
@@ -12,24 +13,30 @@ async function apiRequest(endpoint, options = {}) {
   };
 
   const url = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint}`;
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  });
 
-  const isJson = response.headers.get('content-type')?.includes('application/json');
-  const data = isJson ? await response.json() : await response.text();
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers,
+    });
 
-  if (!response.ok) {
-    const errorDetail = (typeof data === 'object' && data?.detail)
-      ? data.detail
-      : (typeof data === 'string' && data)
-      ? data
-      : `Request failed with status ${response.status}`;
-    throw new Error(errorDetail);
+    const isJson = response.headers.get('content-type')?.includes('application/json');
+    const data = isJson ? await response.json() : await response.text();
+
+    if (!response.ok) {
+      const errorDetail = (typeof data === 'object' && data?.detail)
+        ? data.detail
+        : (typeof data === 'string' && data)
+        ? data
+        : `Request failed with status ${response.status}`;
+      throw new Error(errorDetail);
+    }
+
+    return data;
+  } catch (error) {
+    console.error(`API request failed for ${url}:`, error);
+    throw error;
   }
-
-  return data;
 }
 
 export const authService = {
